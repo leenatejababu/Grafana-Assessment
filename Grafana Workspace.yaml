@@ -1,3 +1,13 @@
+###Architecture Overview
+--CFN creates:
+--Amazon Managed Grafana workspace
+--IAM role for Grafana
+--Lambda function (custom resource handler)
+--Lambda:
+--Waits for workspace to be ACTIVE
+---Uses Grafana API to install plugins ###
+
+
 Resources:
   GrafanaWorkspace:
     Type: AWS::Grafana::Workspace
