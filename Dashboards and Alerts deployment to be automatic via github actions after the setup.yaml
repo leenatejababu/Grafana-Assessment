@@ -1,0 +1,159 @@
+##CloudWatch dashboards (via CFN)
+##Grafana dashboards + alerts + templates (via API)
+
+# 1.Code pushed to GitHub
+# 2.GitHub Actions pipeline runs
+# 3.Deploys:
+   #Amazon CloudWatch dashboards via CFN
+   #Amazon Managed Grafana dashboards + alerts via API
+Alerts notify via Amazon SNS
+  Repo Structure
+repo/
+├── cfn/
+│   └── cloudwatch-dashboard.yaml
+├── grafana/
+│   ├── dashboards/
+│   │   └── ec2-dashboard.json
+│   ├── alerts/
+│   │   └── cpu-alert.json
+│   └── templates/
+│       └── alert-template.json
+├── scripts/
+│   └── deploy_grafana.py
+└── .github/workflows/deploy.yml
+
+
+#GitHub Actions Workflow
+
+name: Deploy Observability
+
+on:
+  push:
+    branches: [ main ]
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Configure AWS Credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-region: us-east-1
+          role-to-assume: ${{ secrets.AWS_ROLE }}
+
+      # Deploy CloudWatch Dashboard
+      - name: Deploy CFN
+        run: |
+          aws cloudformation deploy \
+            --template-file cfn/cloudwatch-dashboard.yaml \
+            --stack-name observability-stack \
+            --capabilities CAPABILITY_NAMED_IAM
+
+      # Deploy Grafana Dashboards + Alerts
+      - name: Deploy Grafana Config
+        run: |
+          pip install requests
+          python scripts/deploy_grafana.py
+        env:
+          GRAFANA_URL: ${{ secrets.GRAFANA_URL }}
+          GRAFANA_API_KEY: ${{ secrets.GRAFANA_API_KEY }}
+
+          
+# Grafana Deployment Script
+
+import os
+import json
+import requests
+
+GRAFANA_URL = os.environ["GRAFANA_URL"]
+API_KEY = os.environ["GRAFANA_API_KEY"]
+
+HEADERS = {
+    "Authorization": f"Bearer {API_KEY}",
+    "Content-Type": "application/json"
+}
+
+def upload_dashboard(path):
+    with open(path) as f:
+        data = json.load(f)
+
+    payload = {
+        "dashboard": data,
+        "overwrite": True
+    }
+
+    r = requests.post(
+        f"{GRAFANA_URL}/api/dashboards/db",
+        headers=HEADERS,
+        json=payload
+    )
+    print("Dashboard:", r.status_code, r.text)
+
+
+def create_alert(path):
+    with open(path) as f:
+        data = json.load(f)
+
+    r = requests.post(
+        f"{GRAFANA_URL}/api/v1/provisioning/alert-rules",
+        headers=HEADERS,
+        json=data
+    )
+    print("Alert:", r.status_code, r.text)
+
+
+def create_template(path):
+    with open(path) as f:
+        data = json.load(f)
+
+    r = requests.post(
+        f"{GRAFANA_URL}/api/v1/provisioning/templates",
+        headers=HEADERS,
+        json=data
+    )
+    print("Template:", r.status_code, r.text)
+
+
+if __name__ == "__main__":
+    # dashboards
+    upload_dashboard("grafana/dashboards/ec2-dashboard.json")
+
+    # alerts
+    create_alert("grafana/alerts/cpu-alert.json")
+
+    # templates
+    create_template("grafana/templates/alert-template.json")
+
+    
+     
+#Example Grafana Alert JSON
+
+{
+  "title": "High CPU Usage",
+  "condition": "C",
+  "data": [
+    {
+      "refId": "A",
+      "datasourceUid": "cloudwatch",
+      "model": {
+        "namespace": "AWS/EC2",
+        "metricName": "CPUUtilization",
+        "dimensions": {
+          "InstanceId": "i-1234567890"
+        },
+        "statistic": "Average"
+      }
+    }
+  ],
+  "for": "2m",
+  "annotations": {
+    "summary": "CPU usage high"
+  },
+  "labels": {
+    "severity": "critical"
+  }
+}
