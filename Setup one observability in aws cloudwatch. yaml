@@ -1,0 +1,73 @@
+We’ll Create
+1.Log Group
+2.Metric Filter (extract errors)
+3.Alarm (trigger on errors)
+4.Dashboard (visualize metrics)
+
+
+#CloudFormation Template
+
+
+AWSTemplateFormatVersion: "2010-09-09"
+Description: Basic Observability Setup with CloudWatch
+
+Resources:
+
+  # 1. Log Group
+  AppLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: /app/my-service
+      RetentionInDays: 7
+
+  # 2. Metric Filter (count ERROR logs)
+  ErrorMetricFilter:
+    Type: AWS::Logs::MetricFilter
+    Properties:
+      LogGroupName: !Ref AppLogGroup
+      FilterPattern: "ERROR"
+      MetricTransformations:
+        - MetricValue: "1"
+          MetricNamespace: "MyApp"
+          MetricName: "ErrorCount"
+
+  # 3. Alarm
+  ErrorAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmName: HighErrorRate
+      Namespace: "MyApp"
+      MetricName: "ErrorCount"
+      Statistic: Sum
+      Period: 60
+      EvaluationPeriods: 1
+      Threshold: 5
+      ComparisonOperator: GreaterThanThreshold
+      TreatMissingData: notBreaching
+
+  # 4. Dashboard
+  AppDashboard:
+    Type: AWS::CloudWatch::Dashboard
+    Properties:
+      DashboardName: MyAppDashboard
+      DashboardBody: !Sub |
+        {
+          "widgets": [
+            {
+              "type": "metric",
+              "x": 0,
+              "y": 0,
+              "width": 12,
+              "height": 6,
+              "properties": {
+                "metrics": [
+                  [ "MyApp", "ErrorCount" ]
+                ],
+                "period": 60,
+                "stat": "Sum",
+                "region": "${AWS::Region}",
+                "title": "Error Count"
+              }
+            }
+          ]
+        }
