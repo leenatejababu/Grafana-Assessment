@@ -1,0 +1,64 @@
+Resources:
+  GrafanaWorkspace:
+    Type: AWS::Grafana::Workspace
+    Properties:
+      AccountAccessType: CURRENT_ACCOUNT
+      AuthenticationProviders:
+        - AWS_SSO
+      PermissionType: SERVICE_MANAGED
+      RoleArn: !GetAtt GrafanaRole.Arn
+      Name: my-grafana-workspace
+
+------------------------------------------
+
+# Lambda for Plugin Installation
+
+
+ PluginInstallerFunction:
+    Type: AWS::Lambda::Function
+    Properties:
+      Runtime: python3.11
+      Handler: index.handler
+      Timeout: 300
+      Role: !GetAtt LambdaExecutionRole.Arn
+      Code:
+        ZipFile: |
+          import json
+          import time
+          import urllib3
+
+          http = urllib3.PoolManager()
+
+          def handler(event, context):
+              print(event)
+
+              workspace_endpoint = event['ResourceProperties']['Endpoint']
+              api_key = event['ResourceProperties']['ApiKey']
+              plugins = event['ResourceProperties']['Plugins']
+
+              headers = {
+                  "Authorization": f"Bearer {api_key}",
+                  "Content-Type": "application/json"
+              }
+
+              for plugin in plugins:
+                  url = f"{workspace_endpoint}/api/plugins/{plugin}/install"
+                  r = http.request('POST', url, headers=headers)
+                  print(r.status, r.data)
+
+              return { "Status": "SUCCESS" }
+
+------------------------------------------------------------------------------
+
+
+# Custom Resource
+
+  InstallGrafanaPlugins:
+    Type: Custom::GrafanaPlugins
+    Properties:
+      ServiceToken: !GetAtt PluginInstallerFunction.Arn
+      Endpoint: !GetAtt GrafanaWorkspace.Endpoint
+      ApiKey: "REPLACE_WITH_API_KEY"
+      Plugins:
+        - grafana-piechart-panel
+        - grafana-worldmap-panel
