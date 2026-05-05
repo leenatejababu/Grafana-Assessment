@@ -1,0 +1,174 @@
+
+#Amazon CloudWatch → metrics + dashboard
+#Amazon Managed Grafana → visualization + alerting
+#Amazon SNS → notifications
+
+#CloudWatch dashboards are native via CFN, but Grafana alerts + notification templates require API calls → again solved with a Lambda-backed custom resource.
+
+#Part 1 — Custom CloudWatch Dashboard (CFN)
+
+#Here’s a richer dashboard (multiple metrics):
+
+Resources:
+  ObservabilityDashboard:
+    Type: AWS::CloudWatch::Dashboard
+    Properties:
+      DashboardName: CustomObservabilityDashboard
+      DashboardBody: !Sub |
+        {
+          "widgets": [
+            {
+              "type": "metric",
+              "x": 0, "y": 0, "width": 12, "height": 6,
+              "properties": {
+                "title": "EC2 CPU Utilization",
+                "metrics": [
+                  [ "AWS/EC2", "CPUUtilization", "InstanceId", "i-1234567890" ]
+                ],
+                "stat": "Average",
+                "period": 300,
+                "region": "${AWS::Region}"
+              }
+            },
+            {
+              "type": "metric",
+              "x": 12, "y": 0, "width": 12, "height": 6,
+              "properties": {
+                "title": "Custom Error Count",
+                "metrics": [
+                  [ "MyApp", "ErrorCount" ]
+                ],
+                "stat": "Sum",
+                "period": 60,
+                "region": "${AWS::Region}"
+              }
+            }
+          ]
+        }
+
+ 
+# Part 2 — SNS Topic (for alerts)
+  AlertTopic:
+    Type: AWS::SNS::Topic
+    Properties:
+      TopicName: grafana-alerts
+
+(Optional subscription)
+
+  AlertSubscription:
+    Type: AWS::SNS::Subscription
+    Properties:
+      Protocol: email
+      Endpoint: you@example.com
+      TopicArn: !Ref AlertTopic
+
+
+#Part 3 — Grafana Alerting via Custom Resource
+
+#Grafana Alerting (Unified Alerting) uses APIs:
+
+#/api/v1/provisioning/contact-points
+#/api/v1/provisioning/alert-rules
+#/api/v1/provisioning/templates
+
+
+
+#Lambda (Custom Resource)
+  GrafanaAlertFunction:
+    Type: AWS::Lambda::Function
+    Properties:
+      Runtime: python3.11
+      Handler: index.handler
+      Timeout: 300
+      Role: !GetAtt LambdaExecutionRole.Arn
+      Code:
+        ZipFile: |
+          import json, urllib3
+
+          http = urllib3.PoolManager()
+
+          def handler(event, context):
+              endpoint = event['ResourceProperties']['Endpoint']
+              api_key = event['ResourceProperties']['ApiKey']
+              sns_topic = event['ResourceProperties']['SnsTopicArn']
+
+              headers = {
+                  "Authorization": f"Bearer {api_key}",
+                  "Content-Type": "application/json"
+              }
+
+  # 1. Contact Point (SNS)
+              contact_payload = {
+                "name": "sns-contact",
+                "type": "sns",
+                "settings": {
+                  "topic": sns_topic,
+                  "region": "us-east-1"
+                }
+              }
+
+              http.request(
+                "POST",
+                f"{endpoint}/api/v1/provisioning/contact-points",
+                body=json.dumps(contact_payload),
+                headers=headers
+              )
+
+ # 2. Notification Template
+              template_payload = {
+                "name": "custom-template",
+                "template": "🚨 Alert: {{ .CommonLabels.alertname }} \nDetails: {{ .CommonAnnotations.summary }}"
+              }
+
+              http.request(
+                "POST",
+                f"{endpoint}/api/v1/provisioning/templates",
+                body=json.dumps(template_payload),
+                headers=headers
+              )
+
+ # 3. Alert Rule
+              alert_payload = {
+                "title": "High CPU Alert",
+                "condition": "C",
+                "data": [
+                  {
+                    "refId": "A",
+                    "datasourceUid": "cloudwatch",
+                    "model": {
+                      "namespace": "AWS/EC2",
+                      "metricName": "CPUUtilization",
+                      "dimensions": { "InstanceId": "i-1234567890" },
+                      "statistic": "Average"
+                    }
+                  }
+                ],
+                "noDataState": "NoData",
+                "execErrState": "Error",
+                "for": "2m",
+                "annotations": {
+                  "summary": "CPU usage is high"
+                },
+                "labels": {
+                  "severity": "critical"
+                }
+              }
+
+              http.request(
+                "POST",
+                f"{endpoint}/api/v1/provisioning/alert-rules",
+                body=json.dumps(alert_payload),
+                headers=headers
+              )
+
+              return {"Status": "SUCCESS"}
+              
+# Custom Resource
+
+  GrafanaAlerts:
+    Type: Custom::GrafanaAlerts
+    Properties:
+      ServiceToken: !GetAtt GrafanaAlertFunction.Arn
+      Endpoint: !GetAtt GrafanaWorkspace.Endpoint
+      ApiKey: "REPLACE_WITH_API_KEY"
+      SnsTopicArn: !Ref AlertTopic
