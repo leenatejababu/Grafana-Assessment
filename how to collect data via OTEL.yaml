@@ -1,0 +1,119 @@
+#The OTel Data Flow (Mental Model)
+#Application → OTel SDK → OTel Collector → Backend
+#Instrument apps using OpenTelemetry SDK
+#Send data to Collector
+#Collector routes to:
+  #Amazon CloudWatch
+  #Grafana (via Prometheus/Loki/Tempo)
+  
+  #Step 1 — Instrument Your Application
+
+#Example (Python):
+
+from opentelemetry import trace
+from opentelemetry.sdk.trace import TracerProvider
+from opentelemetry.instrumentation.requests import RequestsInstrumentor
+
+trace.set_tracer_provider(TracerProvider())
+tracer = trace.get_tracer(__name__)
+
+RequestsInstrumentor().instrument()
+
+with tracer.start_as_current_span("example-span"):
+    print("Hello Observability")
+
+
+
+# Step 2 — Run OTel Collector
+
+#The Collector is the heart of the system.
+
+#Minimal config:
+
+receivers:
+  otlp:
+    protocols:
+      grpc:
+      http:
+
+processors:
+  batch:
+
+exporters:
+  logging:
+  awscloudwatch:
+    region: us-east-1
+    log_group_name: "/otel/logs"
+
+service:
+  pipelines:
+    traces:
+      receivers: [otlp]
+      processors: [batch]
+      exporters: [logging]
+
+    metrics:
+      receivers: [otlp]
+      processors: [batch]
+      exporters: [logging]
+
+    logs:
+      receivers: [otlp]
+      processors: [batch]
+      exporters: [awscloudwatch]
+      
+#Step 3 — Run Collector
+#Option A: Docker
+docker run -p 4317:4317 -p 4318:4318 \
+  -v $(pwd)/otelcol.yaml:/etc/otelcol/config.yaml \
+  otel/opentelemetry-collector
+#Option B: Kubernetes (recommended)
+
+#Use Helm:
+
+helm install otel-collector open-telemetry/opentelemetry-collector
+
+
+#Step 4 — Export to Backends
+#For AWS
+#Metrics → CloudWatch
+#Logs → CloudWatch Logs
+#Traces → AWS X-Ray
+
+exporters:
+  awsxray: {}
+  awsemf: {}
+
+
+#For Grafana Stack
+#Metrics → Prometheus
+#Logs → Loki
+#Traces → Tempo
+
+# Step 5 — Auto Instrumentation (Best Shortcut)
+
+#Java
+
+-javaagent:opentelemetry-javaagent.jar
+
+#Python
+
+opentelemetry-instrument python app.py
+
+1. Resource Attributes (Critical)
+
+Define once:
+
+service.name=payment-service
+deployment.environment=prod
+cloud.provider=aws
+
+
+2. Sampling (Avoid Cost Explosion)
+processors:
+  probabilistic_sampler:
+    sampling_percentage: 10
+    
+3. Batching (Performance)
+
+batch:
